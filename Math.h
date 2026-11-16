@@ -23,4 +23,10 @@ struct Vec3 {
 
 Vec3 operator*(float scalar, const Vec3& vector);
 
+// Analytic two-link IK. Unreachable targets are clamped without stretching.
+void SolveTwoBoneIK(const Vec3& root, const Vec3& target,
+                    const Vec3& bendDirection, float upperLength, float lowerLength,
+                    Vec3& joint, Vec3& end);
+
 #endif
+

@@ -108,7 +108,7 @@ void reset_scene()
     man.Reset();
     camera = OrbitCamera();
     man.position.y = ground_height(man.position.x, man.position.z);
-    man.Update(0.0f, 0.0f);
+    man.Update(0.0f, 0.0f, ground_height);
 }
 
 void draw_terrain_vertex(const TerrainVertex& vertex)
@@ -154,17 +154,22 @@ void physics(float dt, const Controls& controls)
 
     Vec3 previous = man.position;
     float speed = controls.fast ? 6.0f : 3.0f;
+    // Move more cautiously on slopes; the foot planner also shortens its steps.
+    float sampleDistance = 0.5f;
+    Vec3 ahead = man.position + movement * sampleDistance;
+    float slope = (ground_height(ahead.x, ahead.z) - ground_height(man.position.x, man.position.z)) / sampleDistance;
+    speed /= 1.0f + 0.65f * std::max(0.0f, slope) + 0.25f * std::abs(slope);
     man.position = man.position + movement * (speed * dt);
-    float edge = TERRAIN_CELLS * TERRAIN_SPACING * 0.5f - 0.8f;
+    float edge = TERRAIN_CELLS * TERRAIN_SPACING * 0.5f - 1.5f;
     man.position.x = std::clamp(man.position.x, -edge, edge);
     man.position.z = std::clamp(man.position.z, -edge, edge);
     Vec3 step(man.position.x - previous.x, 0.0f, man.position.z - previous.z);
     if (step.LengthSquared() > 0.0f)
         man.yaw = std::atan2(step.x, -step.z);
 
-    // This is the only character grounding query. Feet stay tied to the model.
+    // The root follows the mesh; Character plans terrain contacts and solves leg IK.
     man.position.y = ground_height(man.position.x, man.position.z);
-    man.Update(dt, step.Length());
+    man.Update(dt, step.Length(), ground_height);
 }
 
 void render(int width, int height, const float lightPosition[4])
@@ -213,3 +218,4 @@ void render(int width, int height, const float lightPosition[4])
     ggprint(&r, 12, 18, 0x00ffffff, "Man: %.1f, %.1f, %.1f",
             man.position.x, man.position.y, man.position.z);
 }
+
