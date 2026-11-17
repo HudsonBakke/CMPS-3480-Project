@@ -58,8 +58,15 @@ void CheckPose(const Character& man, const CharacterPose& previous,
 {
     const CharacterPose& p = man.Pose();
     Require(std::isfinite(p.head.y), "nonfinite pose");
+    Require(p.footPlanted[0] || p.footPlanted[1], "both feet airborne");
     Require(Near(man.position.y, ground(man.position.x, man.position.z)), "root height differs from terrain");
     for (int i = 0; i < 2; ++i) {
+        if (previous.footPlanted[i] && !p.footPlanted[i]) {
+            // A new swing may start only after its partner has touched down,
+            // and that support contact must remain planted through this frame.
+            Require(previous.footPlanted[1-i] && p.footPlanted[1-i],
+                    "foot lifted before the other was planted");
+        }
         Require(Near((p.knees[i] - p.hips[i]).Length(), .82f), "thigh stretched");
         Require(Near((p.ankles[i] - p.knees[i]).Length(), .82f), "shin stretched");
         Require(Near((p.elbows[i] - p.shoulders[i]).Length(), .46f), "upper arm stretched");
@@ -164,7 +171,7 @@ void Pivot(const char *name, float direction, float dt, float initialYaw,
     CharacterPose start = man.Pose();
     Vec3 forward = man.Forward();
     float accumulatedTurn = 0;
-    bool oppositeArcs = false;
+    bool opposingSteps[2] = {};
     int liftOffs[2] = {};
     for (frame = 0; frame < int(5 / dt); ++frame) {
         auto previous = man.Pose();
@@ -180,15 +187,17 @@ void Pivot(const char *name, float direction, float dt, float initialYaw,
             if (previous.footPlanted[i] && !man.Pose().footPlanted[i]) ++liftOffs[i];
         float left = (man.Pose().ankles[0] - start.ankles[0]).Dot(forward);
         float right = (man.Pose().ankles[1] - start.ankles[1]).Dot(forward);
-        if (!man.Pose().footPlanted[0] && !man.Pose().footPlanted[1] &&
-            direction * left > .01f && direction * right < -.01f)
-            oppositeArcs = true;
+        // Opposing pivot paths are preserved, now taken on successive steps.
+        if (!man.Pose().footPlanted[0] && direction * left > .01f)
+            opposingSteps[0] = true;
+        if (!man.Pose().footPlanted[1] && direction * right < -.01f)
+            opposingSteps[1] = true;
         Require(std::hypot(man.position.x, man.position.z) < .0001f, "in-place pivot translated the root");
     }
     Require(direction * accumulatedTurn > 3.5f, "pivot stopped making angular progress");
-    Require(oppositeArcs, "pivot feet did not take opposing arcs");
+    Require(opposingSteps[0] && opposingSteps[1], "pivot feet did not step along opposing arcs");
     Require(liftOffs[0] > 3 && liftOffs[1] > 3, "pivot did not use both feet");
-    // Reversing a turn while both feet are airborne must replan continuously.
+    // Reversing a turn must replan only the airborne foot, keeping its support.
     for (frame = 0; frame < int(2 / dt); ++frame) {
         auto previous = man.Pose();
         man.Update(dt, 0, ground, -direction * 1.6f);
@@ -253,6 +262,35 @@ void MixedModes(float dt, Character::GroundHeight ground)
     }
 }
 
+
+void RapidModeChanges(float dt, Character::GroundHeight ground)
+{
+    scenario = "rapid mode changes preserve support";
+    Character man;
+    man.Reset();
+    man.Update(0, 0, ground);
+    // Change commands much faster than a swing can finish. This used to start
+    // the second foot when entering/reversing a pivot from an existing step.
+    const float speeds[8] = {3, 0, 3, 0, -3, 0, 6, 0};
+    const float turns[8] = {0, 1.6f, 1.6f, 0, -1.6f, -1.6f, 0, 0};
+    for (frame = 0; frame < int(6 / dt); ++frame) {
+        int mode = (frame / 3) % 8;
+        auto previous = man.Pose();
+        man.position = man.position + man.Forward() * (speeds[mode] * dt);
+        man.Update(dt, std::abs(speeds[mode]) * dt, ground, turns[mode]);
+        CheckPose(man, previous, ground);
+        if (ground == Flat)
+            CheckTurningJoints(man);
+    }
+    for (frame = 0; frame < int(3 / dt); ++frame) {
+        auto previous = man.Pose();
+        man.Update(dt, 0, ground);
+        CheckPose(man, previous, ground);
+    }
+    Require(man.Pose().footPlanted[0] && man.Pose().footPlanted[1],
+            "rapid mode changes did not settle");
+}
+
 }
 
 int main()
@@ -286,7 +324,10 @@ int main()
         CurvedWalk(-1, dt);
         MixedModes(dt, Flat);
         MixedModes(dt, Mesh);
+        RapidModeChanges(dt, Flat);
+        RapidModeChanges(dt, Mesh);
     }
-    std::printf("Passed solver edge cases and %d frames of terrain contact, swing clearance, planted-foot locking, turns, stops, hinge alignment, opposing pivot arcs, unequal inside/outside strides and fixed limb lengths.\n", checkedFrames);
+    std::printf("Passed solver edge cases and %d frames of single-foot support, terrain contact, swing clearance, planted-foot locking, turns, stops, hinge alignment, opposing pivot arcs, unequal inside/outside strides and fixed limb lengths.\n", checkedFrames);
 }
+
 

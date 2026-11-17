@@ -51,12 +51,13 @@ private:
         Vec3 up = Vec3(0, 1, 0);
         float yaw = 0.0f;
     };
+    // At most one FootState may be swinging. The other is the world-space
+    // support contact, including during pivots and movement-mode transitions.
     struct FootState {
         FootContact contact;
         FootContact start;
         FootContact landing;
         Vec3 pivotCenter;
-        float delay = 0.0f; // Briefly stagger the two feet during a pivot.
         bool pivot = false;
         float progress = 0.0f; // Normalized swing time, from liftoff (0) to landing (1).
         float duration = 0.24f; // Seconds, independent of frame rate.
@@ -85,7 +86,7 @@ private:
     void TurnHips(float dt);
     float LimitLandingHeading(int index, float heading) const;
     void BeginStep(int index, const Vec3& velocity, GroundHeight ground);
-    void BeginPivot(GroundHeight ground);
+    void BeginPivot(int index, GroundHeight ground);
     void AdvanceSteps(float dt, GroundHeight ground);
     FootContact SampleFoot(const Vec3& location, float heading, GroundHeight ground) const;
     static void FootBasis(const FootContact& contact, Vec3& right, Vec3& forward);
@@ -96,5 +97,6 @@ private:
 };
 
 #endif
+
 
 

@@ -150,7 +150,7 @@ void Character::ConstrainRoot()
     // horizontal reach of each support foot; the pelvis handles vertical reach.
     for (int pass = 0; pass < 4; ++pass) {
         for (int i = 0; i < 2; ++i) {
-            if (feet[i].swinging && feet[i].delay <= 0.0f)
+            if (feet[i].swinging)
                 continue;
             float side = i == 0 ? -1.0f : 1.0f;
             // hip = root + lateralOffset, so subtracting that offset from the
@@ -169,8 +169,6 @@ void Character::ConstrainRoot()
 
 bool Character::FeetSwinging() const
 {
-    // A delayed foot is part of an already scheduled pivot, even though it is
-    // still supporting the body until its delay expires.
     return feet[0].swinging || feet[1].swinging;
 }
 
@@ -203,6 +201,10 @@ float Character::LimitLandingHeading(int index, float heading) const
 
 void Character::BeginStep(int index, const Vec3& velocity, GroundHeight ground)
 {
+    // Enforce support at the entry point, not just in the scheduler. Replanning
+    // this foot is allowed, but lifting it while the other is airborne is not.
+    if (feet[1 - index].swinging)
+        return;
     FootState& foot = feet[index];
     float speed = velocity.Length();
     float signedSpeed = velocity.Dot(Forward()); // Negative when walking backward.
@@ -210,7 +212,6 @@ void Character::BeginStep(int index, const Vec3& velocity, GroundHeight ground)
                         position.z + Forward().z * 0.7f) - position.y;
     float travel = 0.70f / (1.0f + 0.8f * std::abs(rise));
     foot.duration = speed > 0.01f ? std::clamp(travel / speed, 0.12f, 0.45f) : 0.22f;
-    foot.delay = 0.0f;
     foot.pivot = false;
 
     // Predict the body's curved path during this swing, then place the foot at
@@ -249,30 +250,27 @@ void Character::BeginStep(int index, const Vec3& velocity, GroundHeight ground)
     foot.swinging = true;
 }
 
-void Character::BeginPivot(GroundHeight ground)
+void Character::BeginPivot(int index, GroundHeight ground)
 {
-    // A pivot rotates the TWO contact positions around a stationary root. For
-    // right turns, the left foot travels forward and the right foot backward.
-    // Their swings overlap, with a short delay for the trailing foot, rather
-    // than spinning either sole against the floor under a rotating torso.
+    // Use the same opposing arcs as before, but schedule ONE foot at a time.
+    // On a right turn, the left foot steps forward and the right steps backward;
+    // each waits for the other's touchdown before it can lift. Never rotate the
+    // support sole or start a second swing when entering/reversing a pivot.
+    if (feet[1 - index].swinging)
+        return;
     float heading = yaw + std::clamp(requestedTurnRate * 0.30f, -0.44f, 0.44f);
-    for (int i = 0; i < 2; ++i)
-        heading = LimitLandingHeading(i, heading);
+    heading = LimitLandingHeading(index, heading);
     Vec3 futureRight(std::cos(heading), 0, std::sin(heading));
-    for (int i = 0; i < 2; ++i) {
-        FootState& foot = feet[i];
-        float side = i == 0 ? -1.0f : 1.0f;
-        foot.start = foot.contact;
-        foot.landing = SampleFoot(position + futureRight * (side * 0.25f), heading, ground);
-        foot.pivotCenter = position;
-        foot.pivot = true;
-        foot.duration = 0.30f;
-        bool lead = requestedTurnRate > 0 ? i == 0 : i == 1;
-        foot.delay = lead ? 0.0f : 0.05f;
-        foot.clearance = 0.09f + 0.3f * std::max(0.0f, foot.landing.sole.y - foot.start.sole.y);
-        foot.progress = 0.0f;
-        foot.swinging = true;
-    }
+    FootState& foot = feet[index];
+    float side = index == 0 ? -1.0f : 1.0f;
+    foot.start = foot.contact;
+    foot.landing = SampleFoot(position + futureRight * (side * 0.25f), heading, ground);
+    foot.pivotCenter = position;
+    foot.pivot = true;
+    foot.duration = 0.30f;
+    foot.clearance = 0.09f + 0.3f * std::max(0.0f, foot.landing.sole.y - foot.start.sole.y);
+    foot.progress = 0.0f;
+    foot.swinging = true;
 }
 
 void Character::AdvanceSteps(float dt, GroundHeight ground)
@@ -281,15 +279,7 @@ void Character::AdvanceSteps(float dt, GroundHeight ground)
         FootState& foot = feet[i];
         if (!foot.swinging)
             continue;
-        float stepDt = dt;
-        if (foot.delay > 0.0f) {
-            float wait = std::min(foot.delay, stepDt);
-            foot.delay -= wait;
-            stepDt -= wait;
-            if (stepDt <= 0.0f)
-                continue;
-        }
-        foot.progress = std::min(1.0f, foot.progress + stepDt / foot.duration);
+        foot.progress = std::min(1.0f, foot.progress + dt / foot.duration);
         float u = foot.progress;
         // Smoothstep has zero horizontal velocity at liftoff and touchdown.
         // The quartic arch is zero at both ends, peaks at one halfway through,
@@ -349,46 +339,47 @@ void Character::Update(float dt, float distanceMoved, GroundHeight ground, float
     position.y = ground(position.x, position.z);
 
     bool reversedTurn = requestedTurnRate * previousTurnRate < -0.001f;
-    if (pivoting && (!wasPivoting || reversedTurn)) {
-        BeginPivot(ground);
-    } else {
-        for (int i = 0; i < 2; ++i) {
-            if (!feet[i].swinging)
-                continue;
-            Vec3 targetOffset = feet[i].landing.sole - position;
-            targetOffset.y = 0;
-            // Replan from the current airborne pose when stopping, leaving a
-            // pivot, or reaching too far. Do not restart for every tiny yaw
-            // change: constantly resetting progress can prevent touchdown.
-            if ((wasMoving && !moving) || (feet[i].pivot && translating) ||
-                (!feet[i].pivot && targetOffset.Length() > 1.25f))
-                BeginStep(i, translating ? velocity : Vec3(), ground);
+    for (int i = 0; i < 2; ++i) {
+        if (!feet[i].swinging)
+            continue;
+        Vec3 targetOffset = feet[i].landing.sole - position;
+        targetOffset.y = 0;
+        // Mode changes may redirect the foot already in the air. They must not
+        // launch its supporting partner: that partner waits for touchdown too.
+        if (pivoting && (!feet[i].pivot || reversedTurn)) {
+            BeginPivot(i, ground);
+        } else if ((wasMoving && !moving) || (feet[i].pivot && translating) ||
+                   (!feet[i].pivot && targetOffset.Length() > 1.25f)) {
+            BeginStep(i, translating ? velocity : Vec3(), ground);
         }
-        if (!FeetSwinging()) {
-            if (pivoting) {
-                BeginPivot(ground);
-            } else if (translating) {
-                BeginStep(nextFoot, velocity, ground);
-            } else {
-                // With no input, finish by stepping each foot near its hip.
-                // Contact errors include heading, so feet never rotate on the
-                // ground just to match a newly stopped torso.
-                int settle = -1;
-                float largestError = 0.06f;
-                for (int i = 0; i < 2; ++i) {
-                    float side = i == 0 ? -1.0f : 1.0f;
-                    Vec3 home = position + Right() * (side * 0.25f);
-                    Vec3 offset = home - feet[i].contact.sole;
-                    offset.y = 0;
-                    float error = offset.Length() + 0.15f * std::abs(AngleDifference(yaw, feet[i].contact.yaw));
-                    if (error > largestError) {
-                        largestError = error;
-                        settle = i;
-                    }
+    }
+    if (!FeetSwinging()) {
+        if (pivoting) {
+            // Start with the appropriate lead foot when entering a pivot, then
+            // alternate using nextFoot, set only when a swing actually lands.
+            int index = wasPivoting ? nextFoot : requestedTurnRate > 0 ? 0 : 1;
+            BeginPivot(index, ground);
+        } else if (translating) {
+            BeginStep(nextFoot, velocity, ground);
+        } else {
+            // With no input, finish by stepping each foot near its hip.
+            // Contact errors include heading, so feet never rotate on the
+            // ground just to match a newly stopped torso.
+            int settle = -1;
+            float largestError = 0.06f;
+            for (int i = 0; i < 2; ++i) {
+                float side = i == 0 ? -1.0f : 1.0f;
+                Vec3 home = position + Right() * (side * 0.25f);
+                Vec3 offset = home - feet[i].contact.sole;
+                offset.y = 0;
+                float error = offset.Length() + 0.15f * std::abs(AngleDifference(yaw, feet[i].contact.yaw));
+                if (error > largestError) {
+                    largestError = error;
+                    settle = i;
                 }
-                if (settle >= 0)
-                    BeginStep(settle, Vec3(), ground);
             }
+            if (settle >= 0)
+                BeginStep(settle, Vec3(), ground);
         }
     }
     AdvanceSteps(dt, ground);
@@ -423,7 +414,7 @@ void Character::UpdatePose(float dt)
         const FootContact& foot = feet[i].contact;
         FootBasis(foot, pose.footRight[i], pose.footForward[i]);
         pose.footUp[i] = foot.up;
-        pose.footPlanted[i] = !feet[i].swinging || feet[i].delay > 0.0f;
+        pose.footPlanted[i] = !feet[i].swinging;
         // IK ends at the ankle joint, which sits above the sole along boot up.
         targets[i] = foot.sole + foot.up * ANKLE_HEIGHT;
         float side = i == 0 ? -1.0f : 1.0f;
@@ -592,4 +583,5 @@ void Character::Draw() const
 
 
 #endif // CHARACTER_HEADLESS
+
 
