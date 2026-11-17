@@ -5,6 +5,7 @@
 
 struct GLUquadric;
 
+// World-space joint positions and boot axes consumed by the renderer.
 struct CharacterPose {
     Vec3 pelvis;
     Vec3 head;
@@ -22,8 +23,8 @@ struct CharacterPose {
 
 class Character {
 public:
-    Vec3 position;
-    float yaw = 0.0f;
+    Vec3 position; // Proposed root position, corrected for terrain/reach in Update.
+    float yaw = 0.0f; // Current body heading in radians; turn through Update.
 
     Character() = default;
     Character(const Character&) = delete;
@@ -33,7 +34,9 @@ public:
     void CleanupGraphics();
     void Reset();
     using GroundHeight = float (*)(float x, float z);
-    void Update(float dt, float distanceMoved, GroundHeight ground);
+    // Scene supplies translation; turnRate is the requested body rotation in
+    // radians/second. The feet may limit the actual rotation until a step lands.
+    void Update(float dt, float distanceMoved, GroundHeight ground, float turnRate = 0.0f);
     void Draw() const;
 
     Vec3 Forward() const;
@@ -41,6 +44,8 @@ public:
     const CharacterPose& Pose() const;
 
 private:
+    // A contact is a rigid sole pose. Once planted, all three fields stay fixed
+    // in WORLD space, even as the pelvis moves above the support foot.
     struct FootContact {
         Vec3 sole;
         Vec3 up = Vec3(0, 1, 0);
@@ -50,9 +55,12 @@ private:
         FootContact contact;
         FootContact start;
         FootContact landing;
-        float progress = 0.0f;
-        float duration = 0.24f;
-        float clearance = 0.22f;
+        Vec3 pivotCenter;
+        float delay = 0.0f; // Briefly stagger the two feet during a pivot.
+        bool pivot = false;
+        float progress = 0.0f; // Normalized swing time, from liftoff (0) to landing (1).
+        float duration = 0.24f; // Seconds, independent of frame rate.
+        float clearance = 0.22f; // Height of the swing arch in world units.
         bool swinging = false;
     };
 
@@ -61,7 +69,9 @@ private:
     Vec3 previousPosition;
     bool feetInitialized = false;
     bool wasMoving = false;
-    int activeFoot = -1;
+    bool wasPivoting = false;
+    float previousTurnRate = 0.0f;
+    float requestedTurnRate = 0.0f;
     int nextFoot = 0;
     float pelvisY = 0.0f;
     float walkPhase = 0.0f;
@@ -71,8 +81,12 @@ private:
     void UpdatePose(float dt);
     void InitializeFeet(GroundHeight ground);
     void ConstrainRoot();
+    bool FeetSwinging() const;
+    void TurnHips(float dt);
+    float LimitLandingHeading(int index, float heading) const;
     void BeginStep(int index, const Vec3& velocity, GroundHeight ground);
-    void AdvanceStep(float dt, GroundHeight ground);
+    void BeginPivot(GroundHeight ground);
+    void AdvanceSteps(float dt, GroundHeight ground);
     FootContact SampleFoot(const Vec3& location, float heading, GroundHeight ground) const;
     static void FootBasis(const FootContact& contact, Vec3& right, Vec3& forward);
     static void FitSole(FootContact& contact, GroundHeight ground);
@@ -82,4 +96,5 @@ private:
 };
 
 #endif
+
 

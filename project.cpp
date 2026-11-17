@@ -33,7 +33,7 @@ int main(void)
         auto held = [&](KeySym key) { return x11.key_down(keys, key); };
         Controls controls;
         controls.moveForward = held(XK_w) - held(XK_s);
-        controls.moveRight = held(XK_d) - held(XK_a);
+        controls.turn = held(XK_d) - held(XK_a);
         controls.orbitHorizontal = held(XK_Right) - held(XK_Left);
         controls.orbitVertical = held(XK_Up) - held(XK_Down);
         controls.fast = held(XK_Shift_L) || held(XK_Shift_R);
@@ -52,3 +52,4 @@ int main(void)
     cleanup_fonts();
     return 0;
 }
+

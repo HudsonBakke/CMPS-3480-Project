@@ -64,6 +64,9 @@ void init_terrain(void)
 }
 
 // Interpolate the actual mesh triangles, rather than resampling the noise.
+// fx/fz are the coordinates inside one grid cell. The strip's diagonal joins
+// (1,0) to (0,1), so fx+fz selects the triangle. Each return is a barycentric
+// weighted height: the character touches the same planes that OpenGL draws.
 float ground_height(float x, float z)
 {
     float gx = x / TERRAIN_SPACING + TERRAIN_CELLS / 2;
@@ -147,9 +150,10 @@ void physics(float dt, const Controls& controls)
     camera.elevation = std::clamp(camera.elevation, 0.10f, 1.35f);
     camera.yaw = std::remainder(camera.yaw, 2.0f * PI);
 
-    Vec3 forward(-std::sin(camera.yaw), 0.0f, -std::cos(camera.yaw));
-    Vec3 right(std::cos(camera.yaw), 0.0f, -std::sin(camera.yaw));
-    Vec3 movement = forward * controls.moveForward + right * controls.moveRight;
+    // Walking direction belongs to the character, independently of the camera.
+    // Character::Update integrates A/D turning while its foot planner schedules
+    // the required contacts; changing view direction never snaps the body yaw.
+    Vec3 movement = man.Forward() * controls.moveForward;
     movement.Normalize();
 
     Vec3 previous = man.position;
@@ -160,16 +164,15 @@ void physics(float dt, const Controls& controls)
     float slope = (ground_height(ahead.x, ahead.z) - ground_height(man.position.x, man.position.z)) / sampleDistance;
     speed /= 1.0f + 0.65f * std::max(0.0f, slope) + 0.25f * std::abs(slope);
     man.position = man.position + movement * (speed * dt);
+    // Leave enough margin for an anticipated step plus the boot's toe/heel.
     float edge = TERRAIN_CELLS * TERRAIN_SPACING * 0.5f - 1.5f;
     man.position.x = std::clamp(man.position.x, -edge, edge);
     man.position.z = std::clamp(man.position.z, -edge, edge);
     Vec3 step(man.position.x - previous.x, 0.0f, man.position.z - previous.z);
-    if (step.LengthSquared() > 0.0f)
-        man.yaw = std::atan2(step.x, -step.z);
 
     // The root follows the mesh; Character plans terrain contacts and solves leg IK.
     man.position.y = ground_height(man.position.x, man.position.z);
-    man.Update(dt, step.Length(), ground_height);
+    man.Update(dt, step.Length(), ground_height, controls.turn * 1.6f);
 }
 
 void render(int width, int height, const float lightPosition[4])
@@ -213,9 +216,10 @@ void render(int width, int height, const float lightPosition[4])
     Rect r = {};
     r.left = 10;
     r.bot = height - 20;
-    ggprint(&r, 12, 18, 0x00ffffff, "WASD: walk | Arrows: orbit camera");
+    ggprint(&r, 12, 18, 0x00ffffff, "W/S: walk | A/D: turn | Arrows: orbit camera");
     ggprint(&r, 12, 18, 0x00ffffff, "Shift: faster | R: reset | Esc: quit");
     ggprint(&r, 12, 18, 0x00ffffff, "Man: %.1f, %.1f, %.1f",
             man.position.x, man.position.y, man.position.z);
 }
+
 

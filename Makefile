@@ -15,7 +15,9 @@ all: $(TARGET)
 $(TARGET): $(SOURCES) $(HEADERS) libggfonts.a Makefile
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $(SOURCES) libggfonts.a -o $@ $(LDLIBS)
 
-# Numerical IK/contact tests do not require an X server or OpenGL headers.
+# -D defines a preprocessor macro for THIS compiler invocation only.
+# CHARACTER_HEADLESS excludes drawing code so the numerical tests below need
+# neither OpenGL headers/libraries nor an X server. Normal `make` does not set it.
 .ik-tests: IKTests.cpp Character.cpp Math.cpp perlin.cpp Character.h Math.h Makefile
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DCHARACTER_HEADLESS IKTests.cpp Character.cpp Math.cpp perlin.cpp -o $@
 
@@ -25,4 +27,5 @@ test: .ik-tests
 # Also remove intermediate files left by the previous Makefile.
 clean:
 	$(RM) $(TARGET) .ik-tests *.o *.d
+
 
